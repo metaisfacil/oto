@@ -24,15 +24,15 @@ import (
 )
 
 var (
-	kAudioObjectSystemObject                 = _AudioObjectID(1)
-	kAudioHardwarePropertyDevices            = darwinFourCC("dev#")
+	kAudioObjectSystemObject                  = _AudioObjectID(1)
+	kAudioHardwarePropertyDevices             = darwinFourCC("dev#")
 	kAudioHardwarePropertyDefaultOutputDevice = darwinFourCC("dOut")
-	kAudioDevicePropertyDeviceUID            = darwinFourCC("uid ")
-	kAudioDevicePropertyStreams              = darwinFourCC("stm#")
-	kAudioObjectPropertyName                 = darwinFourCC("lnam")
-	kAudioObjectPropertyScopeGlobal          = darwinFourCC("glob")
-	kAudioObjectPropertyScopeOutput          = darwinFourCC("outp")
-	kAudioQueuePropertyCurrentDevice         = darwinFourCC("aqcd")
+	kAudioDevicePropertyDeviceUID             = darwinFourCC("uid ")
+	kAudioDevicePropertyStreams               = darwinFourCC("stm#")
+	kAudioObjectPropertyName                  = darwinFourCC("lnam")
+	kAudioObjectPropertyScopeGlobal           = darwinFourCC("glob")
+	kAudioObjectPropertyScopeOutput           = darwinFourCC("outp")
+	kAudioQueuePropertyCurrentDevice          = darwinFourCC("aqcd")
 )
 
 const kAudioObjectPropertyElementMain = 0

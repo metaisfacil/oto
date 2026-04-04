@@ -18,15 +18,15 @@ import "testing"
 
 func TestNewOutputDeviceSelection(t *testing.T) {
 	tests := []struct {
-		name        string
-		options     NewContextOptions
-		want        outputDeviceSelection
-		wantErr     bool
+		name    string
+		options NewContextOptions
+		want    outputDeviceSelection
+		wantErr bool
 	}{
 		{
-			name: "auto",
+			name:    "auto",
 			options: NewContextOptions{},
-			want: outputDeviceSelection{},
+			want:    outputDeviceSelection{},
 		},
 		{
 			name: "backend only",

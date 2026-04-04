@@ -5,6 +5,8 @@
 
 A low-level library to play sound.
 
+This repository is a fork maintained for [Silphium](https://github.com/metaisfacil/silphium).
+
 - [Oto (v3)](#oto-v3)
   - [Platforms](#platforms)
   - [Prerequisite](#prerequisite)

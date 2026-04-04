@@ -58,14 +58,14 @@ type _WAVEFORMATEX struct {
 }
 
 type _WAVEOUTCAPSW struct {
-	wMid            uint16
-	wPid            uint16
-	vDriverVersion  uint32
-	szPname         [32]uint16
-	dwFormats       uint32
-	wChannels       uint16
-	wReserved1      uint16
-	dwSupport       uint32
+	wMid           uint16
+	wPid           uint16
+	vDriverVersion uint32
+	szPname        [32]uint16
+	dwFormats      uint32
+	wChannels      uint16
+	wReserved1     uint16
+	dwSupport      uint32
 }
 
 const (
