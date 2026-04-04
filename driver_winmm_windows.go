@@ -24,7 +24,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/ebitengine/oto/v3/internal/mux"
+	"github.com/metaisfacil/oto/v3/internal/mux"
 )
 
 func outputWinMMDevices() ([]OutputDevice, error) {

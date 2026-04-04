@@ -70,10 +70,10 @@ jobs:
           go mod init foo
           echo 'package main' > main.go
           echo 'import (' >> main.go
-          echo '  _ "github.com/ebitengine/oto/v3"' >> main.go
+          echo '  _ "github.com/metaisfacil/oto/v3"' >> main.go
           echo ')' >> main.go
           echo 'func main() {}' >> main.go
-          go mod edit -replace github.com/ebitengine/oto/v3=$GITHUB_WORKSPACE
+          go mod edit -replace github.com/metaisfacil/oto/v3=$GITHUB_WORKSPACE
           go mod tidy
           go mod vendor
           go build -v .

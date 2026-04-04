@@ -24,7 +24,7 @@ import (
 
 	"github.com/jfreymuth/pulse"
 
-	"github.com/ebitengine/oto/v3/internal/mux"
+	"github.com/metaisfacil/oto/v3/internal/mux"
 )
 
 type context struct {

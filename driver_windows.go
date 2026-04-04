@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ebitengine/oto/v3/internal/mux"
+	"github.com/metaisfacil/oto/v3/internal/mux"
 )
 
 var errDeviceNotFound = errors.New("oto: device not found")

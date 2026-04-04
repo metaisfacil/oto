@@ -32,7 +32,7 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/ebitengine/oto/v3/internal/mux"
+	"github.com/metaisfacil/oto/v3/internal/mux"
 )
 
 //export oto_OnReadCallback

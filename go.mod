@@ -1,4 +1,4 @@
-module github.com/ebitengine/oto/v3
+module github.com/metaisfacil/oto/v3
 
 go 1.25.0
 
