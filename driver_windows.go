@@ -38,7 +38,7 @@ type context struct {
 	err   atomicError
 }
 
-func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string) (*context, chan struct{}, error) {
+func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string, selection outputDeviceSelection) (*context, chan struct{}, error) {
 	ctx := &context{
 		sampleRate:   sampleRate,
 		channelCount: channelCount,
@@ -50,16 +50,39 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 	go func() {
 		defer close(ctx.ready)
 
-		xc, err0 := newWASAPIContext(sampleRate, channelCount, ctx.mux, bufferSizeInBytes)
-		if err0 == nil {
-			ctx.wasapiContext = xc
-			return
+		var err0 error
+		var err1 error
+
+		switch selection.backend {
+		case DeviceBackendAuto, DeviceBackendWASAPI:
+			var xc *wasapiContext
+			xc, err0 = newWASAPIContext(sampleRate, channelCount, ctx.mux, bufferSizeInBytes, selection)
+			if err0 == nil {
+				ctx.wasapiContext = xc
+				return
+			}
+			if selection.backend != DeviceBackendAuto {
+				ctx.err.TryStore(err0)
+				return
+			}
+		default:
+			err0 = fmt.Errorf("oto: output device backend %q is not supported on Windows", selection.backend)
 		}
 
-		wc, err1 := newWinMMContext(sampleRate, channelCount, ctx.mux, bufferSizeInBytes)
-		if err1 == nil {
-			ctx.winmmContext = wc
-			return
+		switch selection.backend {
+		case DeviceBackendAuto, DeviceBackendWinMM:
+			var wc *winmmContext
+			wc, err1 = newWinMMContext(sampleRate, channelCount, ctx.mux, bufferSizeInBytes, selection)
+			if err1 == nil {
+				ctx.winmmContext = wc
+				return
+			}
+			if selection.backend != DeviceBackendAuto {
+				ctx.err.TryStore(err1)
+				return
+			}
+		default:
+			err1 = fmt.Errorf("oto: output device backend %q is not supported on Windows", selection.backend)
 		}
 
 		if errors.Is(err0, errDeviceNotFound) && errors.Is(err1, errDeviceNotFound) {

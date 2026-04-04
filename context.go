@@ -77,6 +77,18 @@ type NewContextOptions struct {
 	// ApplicationName specifies the name of the client application.
 	// It is used for PulseAudio's volume control UI and so on.
 	ApplicationName string
+
+	// OutputDeviceID specifies the output device to open.
+	//
+	// Use a value returned by OutputDevices. If empty, Oto chooses the default output device.
+	// When OutputDeviceBackend is also specified, the backend implied by OutputDeviceID must match.
+	OutputDeviceID string
+
+	// OutputDeviceBackend forces a specific backend when creating the context.
+	//
+	// Leave this empty to preserve Oto's default backend selection behavior. This is mainly useful
+	// on platforms like Windows where multiple backends are available.
+	OutputDeviceBackend DeviceBackend
 }
 
 // NewContext creates a new context with given options.
@@ -101,7 +113,11 @@ func NewContext(options *NewContextOptions) (*Context, chan struct{}, error) {
 		bufferSizeInBytes = int(int64(options.BufferSize) * int64(bytesPerSecond) / int64(time.Second))
 		bufferSizeInBytes = bufferSizeInBytes / bytesPerSample * bytesPerSample
 	}
-	ctx, ready, err := newContext(options.SampleRate, options.ChannelCount, mux.Format(options.Format), bufferSizeInBytes, options.ApplicationName)
+	selection, err := newOutputDeviceSelection(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, ready, err := newContext(options.SampleRate, options.ChannelCount, mux.Format(options.Format), bufferSizeInBytes, options.ApplicationName, selection)
 	if err != nil {
 		return nil, nil, err
 	}

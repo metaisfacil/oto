@@ -34,6 +34,22 @@ const (
 	kAudioFormatFlagIsFloat = 1 << 0 // 0x1
 )
 
+const (
+	kCFStringEncodingUTF8 = 0x08000100
+)
+
+type _AudioObjectID uint32
+
+type _AudioObjectPropertyAddress struct {
+	mSelector uint32
+	mScope    uint32
+	mElement  uint32
+}
+
+type _CFIndex int64
+
+type _CFStringRef uintptr
+
 type _AudioStreamBasicDescription struct {
 	mSampleRate       float64
 	mFormatID         uint32
@@ -79,6 +95,7 @@ func initializeAPI() error {
 	purego.RegisterLibFunc(&_AudioQueueNewOutput, toolbox, "AudioQueueNewOutput")
 	purego.RegisterLibFunc(&_AudioQueueAllocateBuffer, toolbox, "AudioQueueAllocateBuffer")
 	purego.RegisterLibFunc(&_AudioQueueEnqueueBuffer, toolbox, "AudioQueueEnqueueBuffer")
+	purego.RegisterLibFunc(&_AudioQueueSetProperty, toolbox, "AudioQueueSetProperty")
 	purego.RegisterLibFunc(&_AudioQueueStart, toolbox, "AudioQueueStart")
 	purego.RegisterLibFunc(&_AudioQueuePause, toolbox, "AudioQueuePause")
 	return nil
@@ -90,6 +107,22 @@ var _AudioQueueAllocateBuffer func(inAQ _AudioQueueRef, inBufferByteSize uint32,
 
 var _AudioQueueEnqueueBuffer func(inAQ _AudioQueueRef, inBuffer _AudioQueueBufferRef, inNumPacketDescs uint32, inPackets []_AudioStreamPacketDescription) uintptr
 
+var _AudioQueueSetProperty func(inAQ _AudioQueueRef, inID uint32, inData unsafe.Pointer, inDataSize uint32) uintptr
+
 var _AudioQueueStart func(inAQ _AudioQueueRef, inStartTime *_AudioTimeStamp) uintptr
 
 var _AudioQueuePause func(inAQ _AudioQueueRef) uintptr
+
+var _AudioObjectGetPropertyDataSize func(inObjectID _AudioObjectID, inAddress *_AudioObjectPropertyAddress, inQualifierDataSize uint32, inQualifierData unsafe.Pointer, outDataSize *uint32) uintptr
+
+var _AudioObjectGetPropertyData func(inObjectID _AudioObjectID, inAddress *_AudioObjectPropertyAddress, inQualifierDataSize uint32, inQualifierData unsafe.Pointer, ioDataSize *uint32, outData unsafe.Pointer) uintptr
+
+var _CFStringCreateWithCString func(alloc uintptr, cStr *byte, encoding uint32) _CFStringRef
+
+var _CFStringGetLength func(theString _CFStringRef) _CFIndex
+
+var _CFStringGetMaximumSizeForEncoding func(length _CFIndex, encoding uint32) _CFIndex
+
+var _CFStringGetCString func(theString _CFStringRef, buffer *byte, bufferSize _CFIndex, encoding uint32) uint8
+
+var _CFRelease func(cf uintptr)

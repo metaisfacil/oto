@@ -14,6 +14,7 @@ A low-level library to play sound.
   - [Usage](#usage)
     - [Playing sounds from memory](#playing-sounds-from-memory)
     - [Playing sounds by file streaming](#playing-sounds-by-file-streaming)
+        - [Selecting an output device](#selecting-an-output-device)
     - [Advanced usage](#advanced-usage)
   - [Crosscompiling](#crosscompiling)
 
@@ -115,6 +116,17 @@ func main() {
     // Format of the source. go-mp3's format is signed 16bit integers.
     op.Format = oto.FormatSignedInt16LE
 
+    // Optional: choose a specific output backend or device.
+    // devices, err := oto.OutputDevices()
+    // if err != nil {
+    //     panic("oto.OutputDevices failed: " + err.Error())
+    // }
+    // for _, device := range devices {
+    //     fmt.Printf("%s\t%s\t%s\n", device.ID, device.Backend, device.Name)
+    // }
+    // op.OutputDeviceID = devices[0].ID
+    // op.OutputDeviceBackend = oto.DeviceBackendWASAPI
+
     // Remember that you should **not** create more than one context
     otoCtx, readyChan, err := oto.NewContext(op)
     if err != nil {
@@ -188,6 +200,33 @@ you might just play static.
 
 To keep it alive not only must you be careful about when you close it, but you might need to keep a reference
 to the original file object alive (by for example keeping it in a struct).
+
+### Selecting an output device
+
+Use `oto.OutputDevices()` to enumerate the output devices that the current platform backend exposes:
+
+```go
+devices, err := oto.OutputDevices()
+if err != nil {
+    panic(err)
+}
+for _, device := range devices {
+    fmt.Printf("%s\t%s\t%s\n", device.ID, device.Backend, device.Name)
+}
+```
+
+Then pass the selected device ID into `NewContextOptions.OutputDeviceID`:
+
+```go
+op := &oto.NewContextOptions{
+    SampleRate:     48000,
+    ChannelCount:   2,
+    Format:         oto.FormatFloat32LE,
+    OutputDeviceID: devices[0].ID,
+}
+```
+
+If you want Oto to keep using the default device but force a specific backend, set `NewContextOptions.OutputDeviceBackend` instead. On Windows this can be used to force `oto.DeviceBackendWASAPI` or `oto.DeviceBackendWinMM`.
 
 ### Advanced usage
 

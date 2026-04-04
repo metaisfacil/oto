@@ -29,6 +29,7 @@ var (
 
 var (
 	procCoCreateInstance = ole32.NewProc("CoCreateInstance")
+	procPropVariantClear = ole32.NewProc("PropVariantClear")
 )
 
 type _REFERENCE_TIME int64
@@ -131,6 +132,10 @@ const (
 	eRender _EDataFlow = 0
 )
 
+const (
+	_DEVICE_STATE_ACTIVE = 0x00000001
+)
+
 type _ERole int32
 
 const (
@@ -164,7 +169,33 @@ type _AudioClientProperties struct {
 }
 
 type _PROPVARIANT struct {
-	// TODO: Implmeent this
+	vt         uint16
+	wReserved1 uint16
+	wReserved2 uint16
+	wReserved3 uint16
+	data       [16]byte
+}
+
+func (p *_PROPVARIANT) pwszVal() *uint16 {
+	return *(**uint16)(unsafe.Pointer(&p.data[0]))
+}
+
+func (p *_PROPVARIANT) Clear() error {
+	r, _, _ := procPropVariantClear.Call(uintptr(unsafe.Pointer(p)))
+	if uint32(r) != uint32(windows.S_OK) {
+		return fmt.Errorf("oto: PropVariantClear failed: HRESULT(%d)", uint32(r))
+	}
+	return nil
+}
+
+type _PROPERTYKEY struct {
+	fmtid windows.GUID
+	pid   uint32
+}
+
+var _PKEY_Device_FriendlyName = _PROPERTYKEY{
+	fmtid: windows.GUID{0xa45c254e, 0xdf1c, 0x4efd, [...]byte{0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}},
+	pid:   14,
 }
 
 type _WAVEFORMATEXTENSIBLE struct {
@@ -433,6 +464,15 @@ func (i *_IMMDevice) Activate(iid *windows.GUID, dwClsCtx uint32, pActivationPar
 	return v, nil
 }
 
+func (i *_IMMDevice) OpenPropertyStore(stgmAccess uint32) (*_IPropertyStore, error) {
+	var store *_IPropertyStore
+	r, _, _ := syscall.Syscall(i.vtbl.OpenPropertyStore, 3, uintptr(unsafe.Pointer(i)), uintptr(stgmAccess), uintptr(unsafe.Pointer(&store)))
+	if uint32(r) != uint32(windows.S_OK) {
+		return nil, fmt.Errorf("oto: IMMDevice::OpenPropertyStore failed: HRESULT(%d)", uint32(r))
+	}
+	return store, nil
+}
+
 func (i *_IMMDevice) GetId() (string, error) {
 	var strId *uint16
 	r, _, _ := syscall.Syscall(i.vtbl.GetId, 2, uintptr(unsafe.Pointer(i)), uintptr(unsafe.Pointer(&strId)), 0)
@@ -462,6 +502,15 @@ type _IMMDeviceEnumerator_Vtbl struct {
 	UnregisterEndpointNotificationCallback uintptr
 }
 
+func (i *_IMMDeviceEnumerator) EnumAudioEndpoints(dataFlow _EDataFlow, stateMask uint32) (*_IMMDeviceCollection, error) {
+	var collection *_IMMDeviceCollection
+	r, _, _ := syscall.Syscall6(i.vtbl.EnumAudioEndpoints, 4, uintptr(unsafe.Pointer(i)), uintptr(dataFlow), uintptr(stateMask), uintptr(unsafe.Pointer(&collection)), 0, 0)
+	if uint32(r) != uint32(windows.S_OK) {
+		return nil, fmt.Errorf("oto: IMMDeviceEnumerator::EnumAudioEndpoints failed: HRESULT(%d)", uint32(r))
+	}
+	return collection, nil
+}
+
 func (i *_IMMDeviceEnumerator) GetDefaultAudioEndPoint(dataFlow _EDataFlow, role _ERole) (*_IMMDevice, error) {
 	var endPoint *_IMMDevice
 	r, _, _ := syscall.Syscall6(i.vtbl.GetDefaultAudioEndpoint, 4, uintptr(unsafe.Pointer(i)),
@@ -475,6 +524,86 @@ func (i *_IMMDeviceEnumerator) GetDefaultAudioEndPoint(dataFlow _EDataFlow, role
 	return endPoint, nil
 }
 
+func (i *_IMMDeviceEnumerator) GetDevice(id string) (*_IMMDevice, error) {
+	pid, err := windows.UTF16PtrFromString(id)
+	if err != nil {
+		return nil, err
+	}
+	var device *_IMMDevice
+	r, _, _ := syscall.Syscall(i.vtbl.GetDevice, 3, uintptr(unsafe.Pointer(i)), uintptr(unsafe.Pointer(pid)), uintptr(unsafe.Pointer(&device)))
+	if uint32(r) != uint32(windows.S_OK) {
+		if isWin32Err(uint32(r)) {
+			return nil, fmt.Errorf("oto: IMMDeviceEnumerator::GetDevice failed: %w", _WIN32_ERR(r))
+		}
+		return nil, fmt.Errorf("oto: IMMDeviceEnumerator::GetDevice failed: HRESULT(%d)", uint32(r))
+	}
+	return device, nil
+}
+
 func (i *_IMMDeviceEnumerator) Release() {
+	syscall.Syscall(i.vtbl.Release, 1, uintptr(unsafe.Pointer(i)), 0, 0)
+}
+
+type _IMMDeviceCollection struct {
+	vtbl *_IMMDeviceCollection_Vtbl
+}
+
+type _IMMDeviceCollection_Vtbl struct {
+	QueryInterface uintptr
+	AddRef         uintptr
+	Release        uintptr
+
+	GetCount uintptr
+	Item     uintptr
+}
+
+func (i *_IMMDeviceCollection) GetCount() (uint32, error) {
+	var count uint32
+	r, _, _ := syscall.Syscall(i.vtbl.GetCount, 2, uintptr(unsafe.Pointer(i)), uintptr(unsafe.Pointer(&count)), 0)
+	if uint32(r) != uint32(windows.S_OK) {
+		return 0, fmt.Errorf("oto: IMMDeviceCollection::GetCount failed: HRESULT(%d)", uint32(r))
+	}
+	return count, nil
+}
+
+func (i *_IMMDeviceCollection) Item(index uint32) (*_IMMDevice, error) {
+	var device *_IMMDevice
+	r, _, _ := syscall.Syscall(i.vtbl.Item, 3, uintptr(unsafe.Pointer(i)), uintptr(index), uintptr(unsafe.Pointer(&device)))
+	if uint32(r) != uint32(windows.S_OK) {
+		return nil, fmt.Errorf("oto: IMMDeviceCollection::Item failed: HRESULT(%d)", uint32(r))
+	}
+	return device, nil
+}
+
+func (i *_IMMDeviceCollection) Release() {
+	syscall.Syscall(i.vtbl.Release, 1, uintptr(unsafe.Pointer(i)), 0, 0)
+}
+
+type _IPropertyStore struct {
+	vtbl *_IPropertyStore_Vtbl
+}
+
+type _IPropertyStore_Vtbl struct {
+	QueryInterface uintptr
+	AddRef         uintptr
+	Release        uintptr
+
+	GetCount uintptr
+	GetAt    uintptr
+	GetValue uintptr
+	SetValue uintptr
+	Commit   uintptr
+}
+
+func (i *_IPropertyStore) GetValue(key *_PROPERTYKEY) (*_PROPVARIANT, error) {
+	value := &_PROPVARIANT{}
+	r, _, _ := syscall.Syscall(i.vtbl.GetValue, 3, uintptr(unsafe.Pointer(i)), uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(value)))
+	if uint32(r) != uint32(windows.S_OK) {
+		return nil, fmt.Errorf("oto: IPropertyStore::GetValue failed: HRESULT(%d)", uint32(r))
+	}
+	return value, nil
+}
+
+func (i *_IPropertyStore) Release() {
 	syscall.Syscall(i.vtbl.Release, 1, uintptr(unsafe.Pointer(i)), 0, 0)
 }

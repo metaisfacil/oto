@@ -28,6 +28,8 @@ var (
 
 var (
 	procWaveOutOpen            = winmm.NewProc("waveOutOpen")
+	procWaveOutGetDevCaps      = winmm.NewProc("waveOutGetDevCapsW")
+	procWaveOutGetNumDevs      = winmm.NewProc("waveOutGetNumDevs")
 	procWaveOutClose           = winmm.NewProc("waveOutClose")
 	procWaveOutPrepareHeader   = winmm.NewProc("waveOutPrepareHeader")
 	procWaveOutUnprepareHeader = winmm.NewProc("waveOutUnprepareHeader")
@@ -53,6 +55,17 @@ type _WAVEFORMATEX struct {
 	nBlockAlign     uint16
 	wBitsPerSample  uint16
 	cbSize          uint16
+}
+
+type _WAVEOUTCAPSW struct {
+	wMid            uint16
+	wPid            uint16
+	vDriverVersion  uint32
+	szPname         [32]uint16
+	dwFormats       uint32
+	wChannels       uint16
+	wReserved1      uint16
+	dwSupport       uint32
 }
 
 const (
@@ -104,17 +117,46 @@ func (m _MMRESULT) Error() string {
 	return fmt.Sprintf("MMRESULT (%d)", m)
 }
 
-func waveOutOpen(f *_WAVEFORMATEX, callback uintptr) (uintptr, error) {
+func waveOutGetNumDevs() (uint32, error) {
+	r, _, e := procWaveOutGetNumDevs.Call()
+	if e != nil && e != windows.ERROR_SUCCESS {
+		return 0, fmt.Errorf("oto: waveOutGetNumDevs failed: %w", e)
+	}
+	return uint32(r), nil
+}
+
+func waveOutGetDevCaps(id uint32) (*_WAVEOUTCAPSW, error) {
+	caps := &_WAVEOUTCAPSW{}
+	r, _, e := procWaveOutGetDevCaps.Call(uintptr(id), uintptr(unsafe.Pointer(caps)), unsafe.Sizeof(_WAVEOUTCAPSW{}))
+	runtime.KeepAlive(caps)
+	if _MMRESULT(r) != _MMSYSERR_NOERROR {
+		if e != nil && e != windows.ERROR_SUCCESS {
+			return nil, fmt.Errorf("oto: waveOutGetDevCaps failed: %w", e)
+		}
+		return nil, fmt.Errorf("oto: waveOutGetDevCaps failed: %w", _MMRESULT(r))
+	}
+	return caps, nil
+}
+
+func waveOutOpen(f *_WAVEFORMATEX, callback uintptr, selection outputDeviceSelection) (uintptr, error) {
 	const (
 		waveMapper       = 0xffffffff
 		callbackFunction = 0x30000
 	)
+	deviceID := uintptr(waveMapper)
+	if selection.backend == DeviceBackendWinMM && selection.explicit {
+		id, err := parseWinMMDeviceID(selection.deviceID)
+		if err != nil {
+			return 0, err
+		}
+		deviceID = uintptr(id)
+	}
 	var w uintptr
 	var fdwOpen uintptr
 	if callback != 0 {
 		fdwOpen |= callbackFunction
 	}
-	r, _, e := procWaveOutOpen.Call(uintptr(unsafe.Pointer(&w)), waveMapper, uintptr(unsafe.Pointer(f)),
+	r, _, e := procWaveOutOpen.Call(uintptr(unsafe.Pointer(&w)), deviceID, uintptr(unsafe.Pointer(f)),
 		callback, 0, fdwOpen)
 	runtime.KeepAlive(f)
 	if _MMRESULT(r) != _MMSYSERR_NOERROR {

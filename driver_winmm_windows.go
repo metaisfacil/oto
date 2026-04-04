@@ -17,6 +17,7 @@ package oto
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -25,6 +26,44 @@ import (
 
 	"github.com/ebitengine/oto/v3/internal/mux"
 )
+
+func outputWinMMDevices() ([]OutputDevice, error) {
+	if err := winmm.Load(); err != nil {
+		return nil, fmt.Errorf("oto: loading winmm.dll failed: %w", err)
+	}
+
+	count, err := waveOutGetNumDevs()
+	if err != nil {
+		return nil, err
+	}
+
+	devices := make([]OutputDevice, 0, count)
+	for i := uint32(0); i < count; i++ {
+		caps, err := waveOutGetDevCaps(i)
+		if err != nil {
+			return nil, err
+		}
+		name := windows.UTF16ToString(caps.szPname[:])
+		if name == "" {
+			name = fmt.Sprintf("WaveOut Device %d", i)
+		}
+		devices = append(devices, OutputDevice{
+			ID:      outputDeviceID(DeviceBackendWinMM, strconv.FormatUint(uint64(i), 10)),
+			Name:    name,
+			Backend: DeviceBackendWinMM,
+		})
+	}
+
+	return devices, nil
+}
+
+func parseWinMMDeviceID(id string) (uint32, error) {
+	v, err := strconv.ParseUint(id, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("oto: invalid WinMM device ID %q: %w", id, err)
+	}
+	return uint32(v), nil
+}
 
 // Avoid goroutines on Windows (hajimehoshi/ebiten#1768).
 // Apparently, switching contexts might take longer than other platforms.
@@ -90,7 +129,7 @@ type winmmContext struct {
 
 var theWinMMContext *winmmContext
 
-func newWinMMContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBytes int) (*winmmContext, error) {
+func newWinMMContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBytes int, selection outputDeviceSelection) (*winmmContext, error) {
 	// winmm.dll is not available on Xbox.
 	if err := winmm.Load(); err != nil {
 		return nil, fmt.Errorf("oto: loading winmm.dll failed: %w", err)
@@ -106,13 +145,13 @@ func newWinMMContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInByt
 	}
 	theWinMMContext = c
 
-	if err := c.start(); err != nil {
+	if err := c.start(selection); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func (c *winmmContext) start() error {
+func (c *winmmContext) start(selection outputDeviceSelection) error {
 	const bitsPerSample = 32
 	nBlockAlign := c.channelCount * bitsPerSample / 8
 	f := &_WAVEFORMATEX{
@@ -125,7 +164,7 @@ func (c *winmmContext) start() error {
 	}
 
 	// TODO: What about using an event instead of a callback? PortAudio and other libraries do that.
-	w, err := waveOutOpen(f, waveOutOpenCallback)
+	w, err := waveOutOpen(f, waveOutOpenCallback, selection)
 	if errors.Is(err, windows.ERROR_NOT_FOUND) {
 		// This can happen when no device is found (#77).
 		return errDeviceNotFound

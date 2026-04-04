@@ -89,7 +89,11 @@ type context struct {
 
 var theContext *context
 
-func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string) (*context, chan struct{}, error) {
+func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string, selection outputDeviceSelection) (*context, chan struct{}, error) {
+	if err := validateDarwinOutputSelection(selection); err != nil {
+		return nil, nil, err
+	}
+
 	// defaultOneBufferSizeInBytes is the default buffer size in bytes.
 	//
 	// 12288 seems necessary at least on iPod touch (7th) and MacBook Pro 2020.
@@ -132,6 +136,10 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 
 		q, bs, err := newAudioQueue(sampleRate, channelCount, oneBufferSizeInBytes)
 		if err != nil {
+			c.err.TryStore(err)
+			return
+		}
+		if err := setAudioQueueOutputDevice(q, selection); err != nil {
 			c.err.TryStore(err)
 			return
 		}

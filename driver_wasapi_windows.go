@@ -28,6 +28,98 @@ import (
 	"github.com/ebitengine/oto/v3/internal/mux"
 )
 
+func outputWASAPIDevices() ([]OutputDevice, error) {
+	t, err := newCOMThread()
+	if err != nil {
+		return nil, err
+	}
+
+	var devices []OutputDevice
+	var cerr error
+	t.Run(func() {
+		devices, cerr = outputWASAPIDevicesOnCOMThread()
+	})
+	if cerr != nil {
+		return nil, cerr
+	}
+	return devices, nil
+}
+
+func outputWASAPIDevicesOnCOMThread() ([]OutputDevice, error) {
+	enumeratorPtr, err := _CoCreateInstance(&uuidMMDeviceEnumerator, nil, uint32(_CLSCTX_ALL), &uuidIMMDeviceEnumerator)
+	if err != nil {
+		return nil, err
+	}
+	enumerator := (*_IMMDeviceEnumerator)(enumeratorPtr)
+	defer enumerator.Release()
+
+	var defaultID string
+	defaultDevice, err := enumerator.GetDefaultAudioEndPoint(eRender, eConsole)
+	if err == nil {
+		defer defaultDevice.Release()
+		defaultID, _ = defaultDevice.GetId()
+	}
+
+	collection, err := enumerator.EnumAudioEndpoints(eRender, _DEVICE_STATE_ACTIVE)
+	if err != nil {
+		return nil, err
+	}
+	defer collection.Release()
+
+	count, err := collection.GetCount()
+	if err != nil {
+		return nil, err
+	}
+
+	devices := make([]OutputDevice, 0, count)
+	for i := uint32(0); i < count; i++ {
+		device, err := collection.Item(i)
+		if err != nil {
+			return nil, err
+		}
+
+		name, id, err := wasapiDeviceName(device)
+		device.Release()
+		if err != nil {
+			return nil, err
+		}
+
+		devices = append(devices, OutputDevice{
+			ID:        outputDeviceID(DeviceBackendWASAPI, id),
+			Name:      name,
+			Backend:   DeviceBackendWASAPI,
+			IsDefault: defaultID != "" && defaultID == id,
+		})
+	}
+
+	return devices, nil
+}
+
+func wasapiDeviceName(device *_IMMDevice) (string, string, error) {
+	id, err := device.GetId()
+	if err != nil {
+		return "", "", err
+	}
+
+	store, err := device.OpenPropertyStore(0)
+	if err != nil {
+		return "", "", err
+	}
+	defer store.Release()
+
+	value, err := store.GetValue(&_PKEY_Device_FriendlyName)
+	if err != nil {
+		return "", "", err
+	}
+	defer value.Clear()
+
+	name := windows.UTF16PtrToString(value.pwszVal())
+	if name == "" {
+		name = id
+	}
+	return name, id, nil
+}
+
 type comThread struct {
 	funcCh chan func()
 }
@@ -76,6 +168,7 @@ type wasapiContext struct {
 	channelCount      int
 	mux               *mux.Mux
 	bufferSizeInBytes int
+	selection         outputDeviceSelection
 
 	comThread     *comThread
 	err           atomicError
@@ -99,7 +192,7 @@ var (
 	errFormatNotSupported = errors.New("oto: the specified format is not supported (there is the closest format instead)")
 )
 
-func newWASAPIContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBytes int) (context *wasapiContext, ferr error) {
+func newWASAPIContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBytes int, selection outputDeviceSelection) (context *wasapiContext, ferr error) {
 	t, err := newCOMThread()
 	if err != nil {
 		return nil, err
@@ -110,6 +203,7 @@ func newWASAPIContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBy
 		channelCount:      channelCount,
 		mux:               mux,
 		bufferSizeInBytes: bufferSizeInBytes,
+		selection:         selection,
 		comThread:         t,
 		suspendedCond:     sync.NewCond(&sync.Mutex{}),
 	}
@@ -133,6 +227,10 @@ func newWASAPIContext(sampleRate, channelCount int, mux *mux.Mux, bufferSizeInBy
 }
 
 func (c *wasapiContext) isDeviceSwitched() (bool, error) {
+	if c.selection.backend == DeviceBackendWASAPI && c.selection.explicit {
+		return false, nil
+	}
+
 	// If the audio is suspended, do nothing.
 	if c.isSuspended() {
 		return false, nil
@@ -207,7 +305,7 @@ func (c *wasapiContext) startOnCOMThread() (ferr error) {
 		}()
 	}
 
-	device, err := c.enumerator.GetDefaultAudioEndPoint(eRender, eConsole)
+	device, err := c.selectedDeviceOnCOMThread()
 	if err != nil {
 		if errors.Is(err, _E_NOTFOUND) {
 			return errDeviceNotFound
@@ -315,6 +413,17 @@ func (c *wasapiContext) startOnCOMThread() (ferr error) {
 	}
 
 	return nil
+}
+
+func (c *wasapiContext) selectedDeviceOnCOMThread() (*_IMMDevice, error) {
+	if c.selection.backend == DeviceBackendWASAPI && c.selection.explicit {
+		device, err := c.enumerator.GetDevice(c.selection.deviceID)
+		if err != nil {
+			return nil, err
+		}
+		return device, nil
+	}
+	return c.enumerator.GetDefaultAudioEndPoint(eRender, eConsole)
 }
 
 func (c *wasapiContext) loop() error {

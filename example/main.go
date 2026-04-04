@@ -30,6 +30,9 @@ var (
 	sampleRate   = flag.Int("samplerate", 48000, "sample rate")
 	channelCount = flag.Int("channelcount", 2, "number of channel")
 	format       = flag.String("format", "s16le", "source format (u8, s16le, or f32le)")
+	deviceID     = flag.String("device", "", "output device ID returned by oto.OutputDevices")
+	backend      = flag.String("backend", "", "force an output backend (wasapi, winmm, pulseaudio, coreaudio, webaudio, oboe)")
+	listDevices  = flag.Bool("list-devices", false, "list available output devices and exit")
 )
 
 type SineWave struct {
@@ -155,9 +158,26 @@ func run() error {
 		freqG = 784.0
 	)
 
+	if *listDevices {
+		devices, err := oto.OutputDevices()
+		if err != nil {
+			return err
+		}
+		for _, device := range devices {
+			defaultSuffix := ""
+			if device.IsDefault {
+				defaultSuffix = " (default)"
+			}
+			fmt.Printf("%s\t%s\t%s%s\n", device.ID, device.Backend, device.Name, defaultSuffix)
+		}
+		return nil
+	}
+
 	op := &oto.NewContextOptions{}
 	op.SampleRate = *sampleRate
 	op.ChannelCount = *channelCount
+	op.OutputDeviceID = *deviceID
+	op.OutputDeviceBackend = oto.DeviceBackend(*backend)
 
 	switch *format {
 	case "f32le":

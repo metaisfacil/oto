@@ -38,7 +38,41 @@ type context struct {
 	err atomicError
 }
 
-func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, applicationName string) (client *context, ready chan struct{}, err error) {
+func outputDevices() ([]OutputDevice, error) {
+	client, err := newPulseClient("Oto")
+	if err != nil {
+		return nil, fmt.Errorf("oto: PulseAudio client initialization failed: %w", err)
+	}
+	defer client.Close()
+
+	var defaultSinkID string
+	if sink, err := client.DefaultSink(); err == nil {
+		defaultSinkID = sink.ID()
+	}
+
+	sinks, err := client.ListSinks()
+	if err != nil {
+		return nil, fmt.Errorf("oto: PulseAudio device enumeration failed: %w", err)
+	}
+
+	devices := make([]OutputDevice, 0, len(sinks))
+	for _, sink := range sinks {
+		name := sink.Name()
+		if name == "" {
+			name = sink.ID()
+		}
+		devices = append(devices, OutputDevice{
+			ID:        outputDeviceID(DeviceBackendPulseAudio, sink.ID()),
+			Name:      name,
+			Backend:   DeviceBackendPulseAudio,
+			IsDefault: sink.ID() == defaultSinkID,
+		})
+	}
+
+	return devices, nil
+}
+
+func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, applicationName string, selection outputDeviceSelection) (client *context, ready chan struct{}, err error) {
 	client = &context{
 		cond: sync.NewCond(&sync.Mutex{}),
 		mux:  mux.New(sampleRate, channelCount, format),
@@ -51,15 +85,13 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 		}
 	}()
 
-	if applicationName == "" {
-		if name, _ := os.Executable(); name != "" {
-			applicationName = filepath.Base(name)
-		} else {
-			applicationName = "Oto"
-		}
+	if selection.backend != DeviceBackendAuto && selection.backend != DeviceBackendPulseAudio {
+		return nil, ready, fmt.Errorf("oto: output device backend %q is not supported on this platform", selection.backend)
 	}
 
-	client.client, err = pulse.NewClient(pulse.ClientApplicationName(applicationName))
+	applicationName = pulseApplicationName(applicationName)
+
+	client.client, err = newPulseClient(applicationName)
 	if err != nil {
 		return nil, ready, fmt.Errorf("oto: PulseAudio client initialization failed: %w", err)
 	}
@@ -81,6 +113,13 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 		if latency > 0 {
 			options = append(options, pulse.PlaybackLatency(latency))
 		}
+	}
+	if selection.explicit {
+		sink, err := client.client.SinkByID(selection.deviceID)
+		if err != nil {
+			return nil, ready, fmt.Errorf("oto: PulseAudio output device lookup failed: %w", err)
+		}
+		options = append(options, pulse.PlaybackSink(sink))
 	}
 
 	client.stream, err = client.client.NewPlayback(pulse.Float32Reader(client.read), options...)
@@ -148,4 +187,18 @@ func (c *context) Err() error {
 		return fmt.Errorf("oto: PulseAudio error: %w", err)
 	}
 	return nil
+}
+
+func pulseApplicationName(applicationName string) string {
+	if applicationName == "" {
+		if name, _ := os.Executable(); name != "" {
+			return filepath.Base(name)
+		}
+		return "Oto"
+	}
+	return applicationName
+}
+
+func newPulseClient(applicationName string) (*pulse.Client, error) {
+	return pulse.NewClient(pulse.ClientApplicationName(applicationName))
 }

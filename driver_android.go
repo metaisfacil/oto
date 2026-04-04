@@ -23,7 +23,11 @@ type context struct {
 	mux *mux.Mux
 }
 
-func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string) (*context, chan struct{}, error) {
+func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeInBytes int, _ string, selection outputDeviceSelection) (*context, chan struct{}, error) {
+	if err := ensureDefaultOnlyOutputSelection(selection, DeviceBackendOboe); err != nil {
+		return nil, nil, err
+	}
+
 	ready := make(chan struct{})
 	close(ready)
 
