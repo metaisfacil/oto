@@ -36,7 +36,6 @@ var (
 // an arbitrary number of players. Then use the players to play sound.
 // Only one live context is supported at a time. Close the current context before
 // creating another.
-//
 type Context struct {
 	context   *context
 	closeOnce sync.Once

@@ -192,7 +192,7 @@ type wasapiContext struct {
 
 	buf []float32
 
-	m sync.Mutex
+	m      sync.Mutex
 	loopWG sync.WaitGroup
 }
 
