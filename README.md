@@ -64,7 +64,8 @@ If the PulseAudio server is not discoverable automatically, set `PULSE_SERVER`.
 ## Usage
 
 The two main components of Oto are a `Context` and `Players`. The context handles interactions with
-the OS and audio drivers, and as such there can only be **one** context in your program.
+the OS and audio drivers, and as such there can only be **one live** context in your program at a time.
+Call `Context.Close()` before creating a replacement context, for example when rebuilding against a different output device.
 
 From a context you can create any number of different players, where each player is given an `io.Reader` that
 it reads bytes representing sounds from and plays.
@@ -129,11 +130,13 @@ func main() {
     // op.OutputDeviceID = devices[0].ID
     // op.OutputDeviceBackend = oto.DeviceBackendWASAPI
 
-    // Remember that you should **not** create more than one context
+    // Remember that you should not keep more than one live context.
+    // Call Close before creating a replacement context.
     otoCtx, readyChan, err := oto.NewContext(op)
     if err != nil {
         panic("oto.NewContext failed: " + err.Error())
     }
+    defer otoCtx.Close()
     // It might take a bit for the hardware audio devices to be ready, so we wait on the channel.
     <-readyChan
 

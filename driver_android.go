@@ -48,6 +48,11 @@ func (c *context) Resume() error {
 	return oboe.Resume()
 }
 
+func (c *context) Close() error {
+	c.mux.Close()
+	return oboe.Close()
+}
+
 func (c *context) Err() error {
 	return nil
 }

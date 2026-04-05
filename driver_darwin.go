@@ -15,6 +15,7 @@
 package oto
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -74,6 +75,8 @@ type context struct {
 	unqueuedBuffers []_AudioQueueBufferRef
 
 	oneBufferSizeInBytes int
+	ready                chan struct{}
+	done                 chan struct{}
 
 	cond *sync.Cond
 
@@ -116,6 +119,8 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 		cond:                 sync.NewCond(&sync.Mutex{}),
 		mux:                  mux.New(sampleRate, channelCount, format),
 		oneBufferSizeInBytes: oneBufferSizeInBytes,
+		ready:                ready,
+		done:                 make(chan struct{}),
 	}
 	theContext = c
 
@@ -126,6 +131,7 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
+		defer close(c.done)
 
 		var readyClosed bool
 		defer func() {
@@ -284,6 +290,36 @@ func (c *context) Err() error {
 		return err.(error)
 	}
 	return nil
+}
+
+func (c *context) Close() error {
+	c.err.TryStore(errContextClosed)
+	c.mux.Close()
+
+	<-c.ready
+
+	c.cond.L.Lock()
+	audioQueue := c.audioQueue
+	c.toPause = false
+	c.toResume = false
+	c.cond.Broadcast()
+	c.cond.L.Unlock()
+
+	var errs []error
+	if audioQueue != 0 {
+		if osstatus := _AudioQueueStop(audioQueue, 1); osstatus != noErr {
+			errs = append(errs, fmt.Errorf("oto: AudioQueueStop failed at Close: %d", osstatus))
+		}
+		if osstatus := _AudioQueueDispose(audioQueue, 1); osstatus != noErr {
+			errs = append(errs, fmt.Errorf("oto: AudioQueueDispose failed at Close: %d", osstatus))
+		}
+	}
+
+	<-c.done
+	if theContext == c {
+		theContext = nil
+	}
+	return errors.Join(errs...)
 }
 
 func render(inUserData unsafe.Pointer, inAQ _AudioQueueRef, inBuffer _AudioQueueBufferRef) {

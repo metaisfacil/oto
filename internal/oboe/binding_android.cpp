@@ -17,6 +17,7 @@
 #include "_cgo_export.h"
 #include "oboe_oboe_Oboe_android.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -56,6 +57,7 @@ private:
   // All the member variables other than the thread must be initialized before
   // the thread.
   std::vector<float> buf_;
+  bool closed_ = false;
   std::mutex mutex_;
   std::condition_variable cond_;
   std::unique_ptr<std::thread> thread_;
@@ -70,6 +72,12 @@ const char *Stream::Play(int sample_rate, int channel_num,
                          int buffer_size_in_bytes) {
   sample_rate_ = sample_rate;
   channel_num_ = channel_num;
+
+  {
+    std::lock_guard<std::mutex> lock{mutex_};
+    closed_ = false;
+    buf_.clear();
+  }
 
   if (!stream_) {
     oboe::AudioStreamBuilder builder;
@@ -125,18 +133,35 @@ const char *Stream::Resume() {
 }
 
 const char *Stream::Close() {
-  // Nobody calls this so far.
+  {
+    std::lock_guard<std::mutex> lock{mutex_};
+    closed_ = true;
+    buf_.clear();
+  }
+  cond_.notify_all();
+
   if (!stream_) {
+    if (thread_) {
+      thread_->join();
+      thread_.reset();
+    }
     return nullptr;
   }
+  const char *msg = nullptr;
   if (oboe::Result result = stream_->stop(); result != oboe::Result::OK) {
-    return oboe::convertToText(result);
+    msg = oboe::convertToText(result);
   }
-  if (oboe::Result result = stream_->close(); result != oboe::Result::OK) {
-    return oboe::convertToText(result);
+  if (msg == nullptr) {
+    if (oboe::Result result = stream_->close(); result != oboe::Result::OK) {
+      msg = oboe::convertToText(result);
+    }
+  }
+  if (thread_) {
+    thread_->join();
+    thread_.reset();
   }
   stream_.reset();
-  return nullptr;
+  return msg;
 }
 
 oboe::DataCallbackResult Stream::onAudioReady(oboe::AudioStream *oboe_stream,
@@ -147,7 +172,11 @@ oboe::DataCallbackResult Stream::onAudioReady(oboe::AudioStream *oboe_stream,
   // https://google.github.io/oboe/reference/classoboe_1_1_audio_stream_data_callback.html#ad8a3a9f609df5fd3a5d885cbe1b2204d
   {
     std::unique_lock<std::mutex> lock{mutex_};
-    cond_.wait(lock, [this, num] { return buf_.size() >= num; });
+    cond_.wait(lock, [this, num] { return closed_ || buf_.size() >= num; });
+    if (closed_) {
+      std::fill_n(reinterpret_cast<float *>(audio_data), num, 0.0f);
+      return oboe::DataCallbackResult::Stop;
+    }
     std::copy(buf_.begin(), buf_.begin() + num,
               reinterpret_cast<float *>(audio_data));
     buf_.erase(buf_.begin(), buf_.begin() + num);
@@ -163,11 +192,18 @@ void Stream::Loop(int num_frames) {
   for (;;) {
     {
       std::unique_lock<std::mutex> lock{mutex_};
-      cond_.wait(lock, [this, &tmp] { return buf_.size() < tmp.size(); });
+      cond_.wait(lock,
+                 [this, &tmp] { return closed_ || buf_.size() < tmp.size(); });
+      if (closed_) {
+        return;
+      }
     }
     oto_oboe_read(&tmp[0], tmp.size());
     {
       std::lock_guard<std::mutex> lock{mutex_};
+      if (closed_) {
+        return;
+      }
       buf_.insert(buf_.end(), tmp.begin(), tmp.end());
       cond_.notify_one();
     }
@@ -187,5 +223,7 @@ const char *oto_oboe_Play(int sample_rate, int channel_num,
 const char *oto_oboe_Suspend() { return Stream::GetInstance().Pause(); }
 
 const char *oto_oboe_Resume() { return Stream::GetInstance().Resume(); }
+
+const char *oto_oboe_Close() { return Stream::GetInstance().Close(); }
 
 } // extern "C"

@@ -179,6 +179,24 @@ func (c *context) Resume() error {
 	return nil
 }
 
+func (c *context) Close() error {
+	c.err.TryStore(errContextClosed)
+
+	c.cond.L.Lock()
+	c.suspended = false
+	client := c.client
+	c.client = nil
+	c.stream = nil
+	c.cond.Broadcast()
+	c.cond.L.Unlock()
+
+	c.mux.Close()
+	if client != nil {
+		client.Close()
+	}
+	return nil
+}
+
 func (c *context) Err() error {
 	if err := c.err.Load(); err != nil {
 		return err

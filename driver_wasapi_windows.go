@@ -122,6 +122,7 @@ func wasapiDeviceName(device *_IMMDevice) (string, string, error) {
 
 type comThread struct {
 	funcCh chan func()
+	once   sync.Once
 }
 
 func newCOMThread() (*comThread, error) {
@@ -163,6 +164,12 @@ func (c *comThread) Run(f func()) {
 	<-ch
 }
 
+func (c *comThread) Close() {
+	c.once.Do(func() {
+		close(c.funcCh)
+	})
+}
+
 type wasapiContext struct {
 	sampleRate        int
 	channelCount      int
@@ -174,6 +181,7 @@ type wasapiContext struct {
 	err           atomicError
 	suspended     bool
 	suspendedCond *sync.Cond
+	closed        bool
 
 	sampleReadyEvent windows.Handle
 	client           *_IAudioClient2
@@ -185,6 +193,7 @@ type wasapiContext struct {
 	buf []float32
 
 	m sync.Mutex
+	loopWG sync.WaitGroup
 }
 
 var (
@@ -262,6 +271,10 @@ func (c *wasapiContext) isDeviceSwitched() (bool, error) {
 }
 
 func (c *wasapiContext) start() error {
+	if c.isClosed() {
+		return errContextClosed
+	}
+
 	var cerr error
 	c.comThread.Run(func() {
 		if err := c.startOnCOMThread(); err != nil {
@@ -273,14 +286,25 @@ func (c *wasapiContext) start() error {
 		return cerr
 	}
 
+	c.loopWG.Add(1)
 	go func() {
+		defer c.loopWG.Done()
+
 		if err := c.loop(); err != nil {
+			if c.isClosed() {
+				c.err.TryStore(errContextClosed)
+				return
+			}
 			if !errors.Is(err, _AUDCLNT_E_DEVICE_INVALIDATED) && !errors.Is(err, _AUDCLNT_E_RESOURCES_INVALIDATED) && !errors.Is(err, errDeviceSwitched) {
 				c.err.TryStore(err)
 				return
 			}
 
 			if err := c.restart(); err != nil {
+				if c.isClosed() {
+					c.err.TryStore(errContextClosed)
+					return
+				}
 				c.err.TryStore(err)
 				return
 			}
@@ -450,14 +474,24 @@ func (c *wasapiContext) loopOnRenderThread() error {
 	last := time.Now()
 	for {
 		c.suspendedCond.L.Lock()
-		for c.suspended {
+		for c.suspended && !c.closed {
 			c.suspendedCond.Wait()
 		}
+		closed := c.closed
 		c.suspendedCond.L.Unlock()
+		if closed {
+			return errContextClosed
+		}
 
 		evt, err := windows.WaitForSingleObject(c.sampleReadyEvent, windows.INFINITE)
 		if err != nil {
+			if c.isClosed() {
+				return errContextClosed
+			}
 			return err
+		}
+		if c.isClosed() {
+			return errContextClosed
 		}
 		if evt != windows.WAIT_OBJECT_0 {
 			return fmt.Errorf("oto: WaitForSingleObject failed: returned value: %d", evt)
@@ -526,6 +560,10 @@ func (c *wasapiContext) writeOnRenderThread() error {
 
 func (c *wasapiContext) Suspend() error {
 	c.suspendedCond.L.Lock()
+	if c.closed {
+		c.suspendedCond.L.Unlock()
+		return errContextClosed
+	}
 	c.suspended = true
 	c.suspendedCond.L.Unlock()
 	c.suspendedCond.Signal()
@@ -535,6 +573,10 @@ func (c *wasapiContext) Suspend() error {
 
 func (c *wasapiContext) Resume() error {
 	c.suspendedCond.L.Lock()
+	if c.closed {
+		c.suspendedCond.L.Unlock()
+		return errContextClosed
+	}
 	c.suspended = false
 	c.suspendedCond.L.Unlock()
 	c.suspendedCond.Signal()
@@ -548,6 +590,12 @@ func (c *wasapiContext) isSuspended() bool {
 	return c.suspended
 }
 
+func (c *wasapiContext) isClosed() bool {
+	c.suspendedCond.L.Lock()
+	defer c.suspendedCond.L.Unlock()
+	return c.closed
+}
+
 func (c *wasapiContext) Err() error {
 	return c.err.Load()
 }
@@ -558,10 +606,14 @@ func (c *wasapiContext) restart() error {
 
 retry:
 	c.suspendedCond.L.Lock()
-	for c.suspended {
+	for c.suspended && !c.closed {
 		c.suspendedCond.Wait()
 	}
+	closed := c.closed
 	c.suspendedCond.L.Unlock()
+	if closed {
+		return errContextClosed
+	}
 
 	if err := c.start(); err != nil {
 		// When a device is switched, the new device might not support the desired format,
@@ -579,4 +631,61 @@ retry:
 		goto retry
 	}
 	return nil
+}
+
+func (c *wasapiContext) closeOnCOMThread() error {
+	var errs []error
+	if c.client != nil {
+		if _, err := c.client.Stop(); err != nil && !errors.Is(err, _AUDCLNT_E_NOT_INITIALIZED) && !errors.Is(err, _AUDCLNT_E_RESOURCES_INVALIDATED) && !errors.Is(err, _AUDCLNT_E_DEVICE_INVALIDATED) {
+			errs = append(errs, err)
+		}
+	}
+	if c.renderClient != nil {
+		c.renderClient.Release()
+		c.renderClient = nil
+	}
+	if c.client != nil {
+		c.client.Release()
+		c.client = nil
+	}
+	if c.enumerator != nil {
+		c.enumerator.Release()
+		c.enumerator = nil
+	}
+	return errors.Join(errs...)
+}
+
+func (c *wasapiContext) Close() error {
+	c.err.TryStore(errContextClosed)
+
+	c.suspendedCond.L.Lock()
+	c.closed = true
+	c.suspended = false
+	c.suspendedCond.L.Unlock()
+	c.suspendedCond.Broadcast()
+
+	var errs []error
+	if c.sampleReadyEvent != 0 {
+		if err := windows.SetEvent(c.sampleReadyEvent); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	c.loopWG.Wait()
+
+	c.comThread.Run(func() {
+		if err := c.closeOnCOMThread(); err != nil {
+			errs = append(errs, err)
+		}
+	})
+	c.comThread.Close()
+
+	if c.sampleReadyEvent != 0 {
+		if err := windows.CloseHandle(c.sampleReadyEvent); err != nil {
+			errs = append(errs, err)
+		}
+		c.sampleReadyEvent = 0
+	}
+
+	return errors.Join(errs...)
 }

@@ -73,6 +73,11 @@ func (c *context) Resume() error {
 	return nil
 }
 
+func (c *context) Close() error {
+	c.mux.Close()
+	return nil
+}
+
 func (c *context) Err() error {
 	return nil
 }

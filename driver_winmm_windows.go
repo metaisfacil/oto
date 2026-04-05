@@ -223,6 +223,33 @@ func (c *winmmContext) Err() error {
 	return nil
 }
 
+func (c *winmmContext) Close() error {
+	c.suspendedCond.L.Lock()
+	c.suspended = false
+	c.suspendedCond.L.Unlock()
+	c.suspendedCond.Broadcast()
+
+	c.cond.L.Lock()
+	if c.waveOut == 0 {
+		c.cond.L.Unlock()
+		return nil
+	}
+	ch := make(chan error, 1)
+	c.loopEndCh = ch
+	waveOut := c.waveOut
+	c.cond.L.Unlock()
+	c.cond.Broadcast()
+
+	var errs []error
+	if err := waveOutReset(waveOut); err != nil {
+		errs = append(errs, err)
+	}
+	if err, ok := <-ch; ok && err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
 func (c *winmmContext) isHeaderAvailable() bool {
 	for _, h := range c.headers {
 		if !h.IsQueued() {

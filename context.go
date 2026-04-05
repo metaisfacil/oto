@@ -15,6 +15,7 @@
 package oto
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -24,18 +25,23 @@ import (
 )
 
 var (
-	contextCreated       bool
+	activeContext        *Context
 	contextCreationMutex sync.Mutex
+	errContextClosed     = errors.New("oto: context is closed")
 )
 
 // Context is the main object in Oto. It interacts with the audio drivers.
 //
 // To play sound with Oto, first create a context. Then use the context to create
 // an arbitrary number of players. Then use the players to play sound.
+// Only one live context is supported at a time. Close the current context before
+// creating another.
 //
-// Creating multiple contexts is NOT supported.
 type Context struct {
-	context *context
+	context   *context
+	closeOnce sync.Once
+	closeErr  error
+	closed    atomicError
 }
 
 // Format is the format of sources.
@@ -95,15 +101,14 @@ type NewContextOptions struct {
 // A context creates and holds ready-to-use Player objects.
 // NewContext returns a context, a channel that is closed when the context is ready, and an error if it exists.
 //
-// Creating multiple contexts is NOT supported.
+// Only one live context is supported at a time. Close the current context before creating another.
 func NewContext(options *NewContextOptions) (*Context, chan struct{}, error) {
 	contextCreationMutex.Lock()
 	defer contextCreationMutex.Unlock()
 
-	if contextCreated {
+	if activeContext != nil {
 		return nil, nil, fmt.Errorf("oto: context is already created")
 	}
-	contextCreated = true
 
 	var bufferSizeInBytes int
 	if options.BufferSize != 0 {
@@ -121,7 +126,9 @@ func NewContext(options *NewContextOptions) (*Context, chan struct{}, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &Context{context: ctx}, ready, nil
+	context := &Context{context: ctx}
+	activeContext = context
+	return context, ready, nil
 }
 
 // NewPlayer creates a new, ready-to-use Player belonging to the Context.
@@ -160,10 +167,37 @@ func (c *Context) NewPlayer(r io.Reader) *Player {
 	}
 }
 
+// Close releases the underlying audio resources.
+//
+// After Close returns, a new context can be created in the same process.
+func (c *Context) Close() error {
+	if c == nil {
+		return nil
+	}
+
+	c.closeOnce.Do(func() {
+		c.closed.TryStore(errContextClosed)
+		if c.context != nil {
+			c.closeErr = c.context.Close()
+		}
+
+		contextCreationMutex.Lock()
+		if activeContext == c {
+			activeContext = nil
+		}
+		contextCreationMutex.Unlock()
+	})
+
+	return c.closeErr
+}
+
 // Suspend suspends the entire audio play.
 //
 // Suspend is concurrent-safe.
 func (c *Context) Suspend() error {
+	if err := c.closed.Load(); err != nil {
+		return err
+	}
 	return c.context.Suspend()
 }
 
@@ -171,6 +205,9 @@ func (c *Context) Suspend() error {
 //
 // Resume is concurrent-safe.
 func (c *Context) Resume() error {
+	if err := c.closed.Load(); err != nil {
+		return err
+	}
 	return c.context.Resume()
 }
 
@@ -178,6 +215,9 @@ func (c *Context) Resume() error {
 //
 // Err is concurrent-safe.
 func (c *Context) Err() error {
+	if err := c.closed.Load(); err != nil {
+		return err
+	}
 	return c.context.Err()
 }
 

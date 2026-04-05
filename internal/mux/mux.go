@@ -53,8 +53,12 @@ type Mux struct {
 	channelCount int
 	format       Format
 
-	players map[*playerImpl]struct{}
-	cond    *sync.Cond
+	players    map[*playerImpl]struct{}
+	allPlayers map[*playerImpl]struct{}
+	cond       *sync.Cond
+	closed     bool
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 // New creates a new Mux.
@@ -64,6 +68,7 @@ func New(sampleRate int, channelCount int, format Format) *Mux {
 		channelCount: channelCount,
 		format:       format,
 		cond:         sync.NewCond(&sync.Mutex{}),
+		done:         make(chan struct{}),
 	}
 	go m.loop()
 	return m
@@ -82,15 +87,24 @@ func (m *Mux) wait() {
 	m.cond.L.Lock()
 	defer m.cond.L.Unlock()
 
-	for m.shouldWait() {
+	for m.shouldWait() && !m.closed {
 		m.cond.Wait()
 	}
 }
 
 func (m *Mux) loop() {
+	defer close(m.done)
+
 	var players []*playerImpl
 	for {
 		m.wait()
+
+		m.cond.L.Lock()
+		if m.closed {
+			m.cond.L.Unlock()
+			return
+		}
+		m.cond.L.Unlock()
 
 		m.cond.L.Lock()
 		for i := range players {
@@ -118,10 +132,27 @@ func (m *Mux) loop() {
 	}
 }
 
+func (m *Mux) registerPlayer(player *playerImpl) bool {
+	m.cond.L.Lock()
+	defer m.cond.L.Unlock()
+
+	if m.closed {
+		return false
+	}
+	if m.allPlayers == nil {
+		m.allPlayers = map[*playerImpl]struct{}{}
+	}
+	m.allPlayers[player] = struct{}{}
+	return true
+}
+
 func (m *Mux) addPlayer(player *playerImpl) {
 	m.cond.L.Lock()
 	defer m.cond.L.Unlock()
 
+	if m.closed {
+		return
+	}
 	if m.players == nil {
 		m.players = map[*playerImpl]struct{}{}
 	}
@@ -134,6 +165,15 @@ func (m *Mux) removePlayer(player *playerImpl) {
 	defer m.cond.L.Unlock()
 
 	delete(m.players, player)
+	m.cond.Signal()
+}
+
+func (m *Mux) unregisterPlayer(player *playerImpl) {
+	m.cond.L.Lock()
+	defer m.cond.L.Unlock()
+
+	delete(m.players, player)
+	delete(m.allPlayers, player)
 	m.cond.Signal()
 }
 
@@ -153,6 +193,26 @@ func (m *Mux) ReadFloat32s(buf []float32) {
 		p.readBufferAndAdd(buf)
 	}
 	m.cond.Signal()
+}
+
+// Close stops the mux loop and closes all players associated with it.
+func (m *Mux) Close() {
+	m.closeOnce.Do(func() {
+		m.cond.L.Lock()
+		m.closed = true
+		players := make([]*playerImpl, 0, len(m.allPlayers))
+		for p := range m.allPlayers {
+			players = append(players, p)
+		}
+		m.cond.Broadcast()
+		m.cond.L.Unlock()
+
+		for _, p := range players {
+			_ = p.Close()
+		}
+
+		<-m.done
+	})
 }
 
 type Player struct {
@@ -191,6 +251,10 @@ func (m *Mux) NewPlayer(src io.Reader) *Player {
 			volume:     1,
 			bufferSize: m.defaultBufferSize(),
 		},
+	}
+	if !m.registerPlayer(pl.p) {
+		pl.p.err = errors.New("oto: context is closed")
+		pl.p.state = playerClosed
 	}
 	pl.cleanup = runtime.AddCleanup(pl, func(p *playerImpl) {
 		_ = p.Close()
@@ -293,6 +357,15 @@ func (p *playerImpl) removeFromPlayers() {
 	p.m.Unlock()
 	defer p.m.Lock()
 	p.mux.removePlayer(p)
+}
+
+// unregister removes p from the mux bookkeeping entirely.
+//
+// When unregister is called, the mutex m must be locked.
+func (p *playerImpl) unregister() {
+	p.m.Unlock()
+	defer p.m.Lock()
+	p.mux.unregisterPlayer(p)
 }
 
 func (p *playerImpl) playImpl() {
@@ -446,7 +519,7 @@ func (p *playerImpl) Close() error {
 }
 
 func (p *playerImpl) closeImpl() error {
-	p.removeFromPlayers()
+	p.unregister()
 
 	if p.state == playerClosed {
 		return p.err

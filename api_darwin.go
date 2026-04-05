@@ -98,6 +98,8 @@ func initializeAPI() error {
 	purego.RegisterLibFunc(&_AudioQueueSetProperty, toolbox, "AudioQueueSetProperty")
 	purego.RegisterLibFunc(&_AudioQueueStart, toolbox, "AudioQueueStart")
 	purego.RegisterLibFunc(&_AudioQueuePause, toolbox, "AudioQueuePause")
+	purego.RegisterLibFunc(&_AudioQueueStop, toolbox, "AudioQueueStop")
+	purego.RegisterLibFunc(&_AudioQueueDispose, toolbox, "AudioQueueDispose")
 	return nil
 }
 
@@ -112,6 +114,10 @@ var _AudioQueueSetProperty func(inAQ _AudioQueueRef, inID uint32, inData unsafe.
 var _AudioQueueStart func(inAQ _AudioQueueRef, inStartTime *_AudioTimeStamp) uintptr
 
 var _AudioQueuePause func(inAQ _AudioQueueRef) uintptr
+
+var _AudioQueueStop func(inAQ _AudioQueueRef, inImmediate uint8) uintptr
+
+var _AudioQueueDispose func(inAQ _AudioQueueRef, inImmediate uint8) uintptr
 
 var _AudioObjectGetPropertyDataSize func(inObjectID _AudioObjectID, inAddress *_AudioObjectPropertyAddress, inQualifierDataSize uint32, inQualifierData unsafe.Pointer, outDataSize *uint32) uintptr
 

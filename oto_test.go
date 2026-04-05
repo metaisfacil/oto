@@ -16,32 +16,41 @@ package oto_test
 
 import (
 	"bytes"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/metaisfacil/oto/v3"
 )
 
-var theContext *oto.Context
+func newTestContextOptions() *oto.NewContextOptions {
+	return &oto.NewContextOptions{
+		SampleRate:   48000,
+		ChannelCount: 2,
+		Format:       oto.FormatFloat32LE,
+	}
+}
 
-func TestMain(m *testing.M) {
-	op := &oto.NewContextOptions{}
-	op.SampleRate = 48000
-	op.ChannelCount = 2
-	op.Format = oto.FormatFloat32LE
-	ctx, ready, err := oto.NewContext(op)
+func newTestContext(t *testing.T) *oto.Context {
+	t.Helper()
+
+	ctx, ready, err := oto.NewContext(newTestContextOptions())
 	if err != nil {
-		panic(err)
+		t.Fatalf("oto.NewContext() failed: %v", err)
 	}
 	<-ready
-	theContext = ctx
-	os.Exit(m.Run())
+	t.Cleanup(func() {
+		if err := ctx.Close(); err != nil {
+			t.Errorf("ctx.Close() failed: %v", err)
+		}
+	})
+	return ctx
 }
 
 func TestEmptyPlayer(t *testing.T) {
+	ctx := newTestContext(t)
+
 	bs := bytes.NewReader(make([]byte, 0))
-	p := theContext.NewPlayer(bs)
+	p := ctx.NewPlayer(bs)
 	p.Play()
 	for p.IsPlaying() {
 		time.Sleep(time.Millisecond)
@@ -50,13 +59,36 @@ func TestEmptyPlayer(t *testing.T) {
 
 // Issue #258
 func TestSetBufferSize(t *testing.T) {
+	ctx := newTestContext(t)
+
 	for i := 0; i < 10; i++ {
 		bs := bytes.NewReader(make([]byte, 512))
-		p := theContext.NewPlayer(bs)
+		p := ctx.NewPlayer(bs)
 		p.Play()
 		p.SetBufferSize(256)
 		for p.IsPlaying() {
 			time.Sleep(time.Millisecond)
 		}
+	}
+}
+
+func TestContextCloseAllowsRecreate(t *testing.T) {
+	ctx := newTestContext(t)
+
+	if _, _, err := oto.NewContext(newTestContextOptions()); err == nil {
+		t.Fatal("oto.NewContext() succeeded while another context is still live")
+	}
+
+	if err := ctx.Close(); err != nil {
+		t.Fatalf("ctx.Close() failed: %v", err)
+	}
+
+	ctx2, ready, err := oto.NewContext(newTestContextOptions())
+	if err != nil {
+		t.Fatalf("oto.NewContext() after Close failed: %v", err)
+	}
+	<-ready
+	if err := ctx2.Close(); err != nil {
+		t.Fatalf("ctx2.Close() failed: %v", err)
 	}
 }

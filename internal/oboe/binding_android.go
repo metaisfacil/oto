@@ -54,6 +54,13 @@ func Resume() error {
 	return nil
 }
 
+func Close() error {
+	if msg := C.oto_oboe_Close(); msg != nil {
+		return fmt.Errorf("oboe: Close failed: %s", C.GoString(msg))
+	}
+	return nil
+}
+
 //export oto_oboe_read
 func oto_oboe_read(buf *C.float, len C.size_t) {
 	theReadFunc(unsafe.Slice((*float32)(unsafe.Pointer(buf)), len))

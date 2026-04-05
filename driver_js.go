@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"syscall/js"
 	"unsafe"
 
@@ -28,6 +29,12 @@ type context struct {
 	audioContext            js.Value
 	scriptProcessor         js.Value
 	scriptProcessorCallback js.Func
+	workletPort             js.Value
+	workletPortCallback     js.Func
+	onEventFired            js.Func
+	onResumeSuccess         js.Func
+	readyCh                 chan struct{}
+	readyOnce               sync.Once
 	ready                   bool
 
 	mux *mux.Mux
@@ -52,6 +59,7 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 
 	d := &context{
 		audioContext: class.New(options),
+		readyCh:      ready,
 		mux:          mux.New(sampleRate, channelCount, format),
 	}
 
@@ -121,14 +129,16 @@ registerProcessor('oto-worklet-processor', OtoWorkletProcessor);
 			})
 			port := node.Get("port")
 			// When the worklet processor requests more data, send the request to the worklet.
-			port.Set("onmessage", js.FuncOf(func(this js.Value, arguments []js.Value) any {
+			d.workletPort = port
+			d.workletPortCallback = js.FuncOf(func(this js.Value, arguments []js.Value) any {
 				d.mux.ReadFloat32s(buf32)
 				buf := float32SliceToTypedArray(buf32)
 				port.Call("postMessage", buf, map[string]any{
 					"transfer": []any{buf.Get("buffer")},
 				})
 				return nil
-			}))
+			})
+			port.Set("onmessage", d.workletPortCallback)
 			node.Call("connect", d.audioContext.Get("destination"))
 			return nil
 		}))
@@ -173,29 +183,37 @@ registerProcessor('oto-worklet-processor', OtoWorkletProcessor);
 
 	events := []string{"touchend", "keyup", "mouseup"}
 
-	var onEventFired js.Func
-	var onResumeSuccess js.Func
-	onResumeSuccess = js.FuncOf(func(this js.Value, arguments []js.Value) any {
+	d.onResumeSuccess = js.FuncOf(func(this js.Value, arguments []js.Value) any {
 		d.ready = true
-		close(ready)
+		d.closeReady()
 		for _, event := range events {
-			js.Global().Get("document").Call("removeEventListener", event, onEventFired)
+			js.Global().Get("document").Call("removeEventListener", event, d.onEventFired)
 		}
-		onEventFired.Release()
-		onResumeSuccess.Release()
+		d.onEventFired.Release()
+		d.onEventFired = js.Func{}
+		d.onResumeSuccess.Release()
+		d.onResumeSuccess = js.Func{}
 		return nil
 	})
-	onEventFired = js.FuncOf(func(this js.Value, arguments []js.Value) any {
+	d.onEventFired = js.FuncOf(func(this js.Value, arguments []js.Value) any {
 		if !d.ready {
-			d.audioContext.Call("resume").Call("then", onResumeSuccess)
+			d.audioContext.Call("resume").Call("then", d.onResumeSuccess)
 		}
 		return nil
 	})
 	for _, event := range events {
-		js.Global().Get("document").Call("addEventListener", event, onEventFired)
+		js.Global().Get("document").Call("addEventListener", event, d.onEventFired)
 	}
 
 	return d, ready, nil
+}
+
+func (c *context) closeReady() {
+	c.readyOnce.Do(func() {
+		if c.readyCh != nil {
+			close(c.readyCh)
+		}
+	})
 }
 
 func (c *context) Suspend() error {
@@ -205,6 +223,38 @@ func (c *context) Suspend() error {
 
 func (c *context) Resume() error {
 	c.audioContext.Call("resume")
+	return nil
+}
+
+func (c *context) Close() error {
+	c.closeReady()
+
+	if c.onEventFired.Truthy() {
+		for _, event := range []string{"touchend", "keyup", "mouseup"} {
+			js.Global().Get("document").Call("removeEventListener", event, c.onEventFired)
+		}
+		c.onEventFired.Release()
+		c.onEventFired = js.Func{}
+	}
+	if c.onResumeSuccess.Truthy() {
+		c.onResumeSuccess.Release()
+		c.onResumeSuccess = js.Func{}
+	}
+	if c.workletPort.Truthy() && c.workletPortCallback.Truthy() {
+		c.workletPort.Set("onmessage", js.Null())
+		c.workletPortCallback.Release()
+		c.workletPortCallback = js.Func{}
+	}
+	if c.scriptProcessor.Truthy() && c.scriptProcessorCallback.Truthy() {
+		c.scriptProcessor.Call("removeEventListener", "audioprocess", c.scriptProcessorCallback)
+		c.scriptProcessor.Call("disconnect")
+		c.scriptProcessorCallback.Release()
+		c.scriptProcessorCallback = js.Func{}
+	}
+	if c.audioContext.Truthy() {
+		c.audioContext.Call("close")
+	}
+	c.mux.Close()
 	return nil
 }
 

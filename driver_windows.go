@@ -17,6 +17,7 @@ package oto
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/metaisfacil/oto/v3/internal/mux"
@@ -97,6 +98,9 @@ func newContext(sampleRate int, channelCount int, format mux.Format, bufferSizeI
 }
 
 func (c *context) Suspend() error {
+	if err := c.err.Load(); err != nil {
+		return err
+	}
 	<-c.ready
 	if c.wasapiContext != nil {
 		return c.wasapiContext.Suspend()
@@ -111,6 +115,9 @@ func (c *context) Suspend() error {
 }
 
 func (c *context) Resume() error {
+	if err := c.err.Load(); err != nil {
+		return err
+	}
 	<-c.ready
 	if c.wasapiContext != nil {
 		return c.wasapiContext.Resume()
@@ -147,8 +154,35 @@ func (c *context) Err() error {
 	return nil
 }
 
+func (c *context) Close() error {
+	c.err.TryStore(errContextClosed)
+	c.mux.Close()
+
+	<-c.ready
+
+	var errs []error
+	if c.wasapiContext != nil {
+		if err := c.wasapiContext.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.winmmContext != nil {
+		if err := c.winmmContext.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.nullContext != nil {
+		if err := c.nullContext.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 type nullContext struct {
+	m         sync.Mutex
 	suspended bool
+	closed    bool
 }
 
 func newNullContext(sampleRate int, channelCount int, mux *mux.Mux) *nullContext {
@@ -161,7 +195,15 @@ func (c *nullContext) loop(sampleRate int, channelCount int, mux *mux.Mux) {
 	var buf32 [4096]float32
 	sleep := time.Duration(float64(time.Second) * float64(len(buf32)) / float64(channelCount) / float64(sampleRate))
 	for {
-		if c.suspended {
+		c.m.Lock()
+		suspended := c.suspended
+		closed := c.closed
+		c.m.Unlock()
+		if closed {
+			return
+		}
+
+		if suspended {
 			time.Sleep(time.Second)
 			continue
 		}
@@ -172,12 +214,23 @@ func (c *nullContext) loop(sampleRate int, channelCount int, mux *mux.Mux) {
 }
 
 func (c *nullContext) Suspend() error {
+	c.m.Lock()
 	c.suspended = true
+	c.m.Unlock()
 	return nil
 }
 
 func (c *nullContext) Resume() error {
+	c.m.Lock()
 	c.suspended = false
+	c.m.Unlock()
+	return nil
+}
+
+func (c *nullContext) Close() error {
+	c.m.Lock()
+	c.closed = true
+	c.m.Unlock()
 	return nil
 }
 
